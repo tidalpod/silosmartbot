@@ -1022,6 +1022,50 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=get_vendor_category_actions_keyboard(category)
             )
 
+    elif callback_data.startswith("vendor_edit_"):
+        # Show edit options for vendor
+        vendor_id = int(callback_data.replace("vendor_edit_", ""))
+        vendor = get_vendor_by_id(vendor_id, chat_id)
+
+        if vendor:
+            vendor_name = vendor[2]
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✏️ Name", callback_data=f"vendor_editfield_{vendor_id}_name")],
+                [InlineKeyboardButton("📞 Phone", callback_data=f"vendor_editfield_{vendor_id}_phone")],
+                [InlineKeyboardButton("📧 Email", callback_data=f"vendor_editfield_{vendor_id}_email")],
+                [InlineKeyboardButton("🏢 Company", callback_data=f"vendor_editfield_{vendor_id}_company")],
+                [InlineKeyboardButton("💡 Specialty", callback_data=f"vendor_editfield_{vendor_id}_specialty")],
+                [InlineKeyboardButton("⭐ Rating", callback_data=f"vendor_editfield_{vendor_id}_rating")],
+                [InlineKeyboardButton("🔙 Back", callback_data=f"vendor_view_{vendor_id}")],
+            ])
+
+            await query.message.reply_text(
+                f"✏️ Edit **{vendor_name}**\n\nWhat would you like to edit?",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+
+    elif callback_data.startswith("vendor_editfield_"):
+        # Start editing a specific field
+        parts = callback_data.replace("vendor_editfield_", "").split("_")
+        vendor_id = int(parts[0])
+        field = parts[1]
+
+        context.user_data['edit_vendor_id'] = vendor_id
+        context.user_data['edit_vendor_field'] = field
+
+        field_names = {
+            'name': 'Name',
+            'phone': 'Phone Number',
+            'email': 'Email',
+            'company': 'Company Name',
+            'specialty': 'Specialty/Notes',
+            'rating': 'Rating (1-5)'
+        }
+
+        await query.message.reply_text(f"Enter new {field_names[field]}:")
+        return VENDOR_EDIT_VALUE
+
     elif callback_data == "vendor_back_main":
         # Back to main menu from vendors
         await query.message.reply_text(
@@ -1215,6 +1259,46 @@ async def pha_department_received(update: Update, context: ContextTypes.DEFAULT_
     return ConversationHandler.END
 
 
+# Edit vendor conversation flow
+async def vendor_edit_value_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive the new value for the vendor field being edited."""
+    vendor_id = context.user_data.get('edit_vendor_id')
+    field = context.user_data.get('edit_vendor_field')
+    new_value = update.message.text.strip()
+    chat_id = update.effective_chat.id
+
+    # Validate rating if that's what's being edited
+    if field == 'rating':
+        try:
+            rating_value = int(new_value)
+            if rating_value < 1 or rating_value > 5:
+                await update.message.reply_text("❌ Invalid rating. Please enter 1-5:")
+                return VENDOR_EDIT_VALUE
+            new_value = rating_value
+        except ValueError:
+            await update.message.reply_text("❌ Invalid rating. Please enter 1-5:")
+            return VENDOR_EDIT_VALUE
+
+    # Update the vendor
+    update_vendor(vendor_id, chat_id, **{field: new_value})
+
+    # Get updated vendor info
+    vendor = get_vendor_by_id(vendor_id, chat_id)
+    if vendor:
+        category = vendor[1]
+        pha_details = get_pha_details(vendor_id) if category == 'pha' else None
+        details = format_vendor_details(vendor, pha_details)
+
+        await update.message.reply_text(
+            f"✅ Updated successfully!\n\n{details}",
+            reply_markup=get_vendor_detail_keyboard(vendor_id, category),
+            parse_mode='Markdown'
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 # ============================================================================
 # Background Reminder Scheduler
 # ============================================================================
@@ -1359,7 +1443,7 @@ def main():
     )
     application.add_handler(remove_conversation)
 
-    # Add conversation handler for vendor management
+    # Add conversation handler for vendor management (add new vendor)
     vendor_conversation = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_vendor_start, pattern="^vendor_add_")
@@ -1378,6 +1462,18 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     application.add_handler(vendor_conversation)
+
+    # Add conversation handler for editing vendor
+    vendor_edit_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(button_callback_handler, pattern="^vendor_editfield_")
+        ],
+        states={
+            VENDOR_EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_edit_value_received)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    )
+    application.add_handler(vendor_edit_conversation)
 
     # Add callback query handler for inline buttons (non-conversation buttons)
     application.add_handler(CallbackQueryHandler(button_callback_handler))
