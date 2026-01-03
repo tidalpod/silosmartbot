@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import asyncio
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -680,6 +680,15 @@ async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Logged out chat {chat_id}, deleted {count} leases")
 
 
+async def vendors_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /vendors command - show vendor categories."""
+    await update.message.reply_text(
+        "🔧 **Vendor Management**\n\nSelect a category:",
+        reply_markup=get_vendor_categories_keyboard(),
+        parse_mode='Markdown'
+    )
+
+
 # ============================================================================
 # /add Command - Conversation Flow
 # ============================================================================
@@ -1280,6 +1289,22 @@ def setup_scheduler(application: Application):
     return scheduler
 
 
+async def set_bot_commands(application: Application):
+    """Set up the bot commands menu that appears in Telegram UI."""
+    commands = [
+        BotCommand("start", "🏠 Main menu - Show bot interface"),
+        BotCommand("add", "📝 Add lease - Add a new lease for tracking"),
+        BotCommand("list", "📋 View leases - View all tracked leases"),
+        BotCommand("remove", "🗑️ Remove lease - Remove a lease from tracking"),
+        BotCommand("vendors", "🔧 Vendors - Manage vendor contacts"),
+        BotCommand("help", "ℹ️ Help - Show help and instructions"),
+        BotCommand("logout", "🔓 Logout - Logout from the bot"),
+    ]
+
+    await application.bot.set_my_commands(commands)
+    logger.info("Bot commands menu set successfully")
+
+
 # ============================================================================
 # Main Application
 # ============================================================================
@@ -1303,6 +1328,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("list", list_command))
+    application.add_handler(CommandHandler("vendors", vendors_command))
     application.add_handler(CommandHandler("logout", logout_command))
 
     # Add conversation handler for /add (supports both command and button)
@@ -1358,6 +1384,13 @@ def main():
 
     # Set up background scheduler
     scheduler = setup_scheduler(application)
+
+    # Set bot commands menu
+    async def post_init(application: Application) -> None:
+        """Post-initialization tasks."""
+        await set_bot_commands(application)
+
+    application.post_init = post_init
 
     # Start the bot
     logger.info("Starting bot...")
