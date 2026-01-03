@@ -41,16 +41,34 @@ TENANT_NAME, PROPERTY_ADDRESS, LEASE_START_DATE = range(3)
 # Conversation state for /remove command
 REMOVE_CHOICE = range(1)
 
+# Conversation states for vendor management
+(VENDOR_NAME, VENDOR_PHONE, VENDOR_EMAIL, VENDOR_COMPANY,
+ VENDOR_SPECIALTY, VENDOR_RATING, VENDOR_EDIT_CHOICE, VENDOR_EDIT_VALUE) = range(8)
+
+# Additional states for PHA contacts
+(PHA_AGENCY, PHA_CONTACT_PERSON, PHA_DEPARTMENT, PHA_EXTENSION,
+ PHA_LINE_TYPE, PHA_BEST_TIME, PHA_FAX, PHA_ADDRESS, PHA_WEBSITE) = range(9, 18)
+
+# Vendor categories
+VENDOR_CATEGORIES = {
+    'plumber': '🚰 Plumbers',
+    'electrician': '⚡ Electricians',
+    'contractor': '🏗️ General Contractors',
+    'pha': '🏛️ PHA Contacts',
+    'other': '🔨 Other Vendors'
+}
+
 
 # ============================================================================
 # Database Functions
 # ============================================================================
 
 def init_database():
-    """Initialize SQLite database and create leases table if it doesn't exist."""
+    """Initialize SQLite database and create tables if they don't exist."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
+    # Leases table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS leases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +79,53 @@ def init_database():
             recert_date TEXT NOT NULL,
             reminder_date TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Vendors table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vendors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            email TEXT,
+            company TEXT,
+            specialty TEXT,
+            rating INTEGER,
+            times_used INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # PHA contacts table (additional fields for Public Housing Agencies)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pha_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER NOT NULL,
+            agency_name TEXT,
+            contact_person TEXT,
+            department TEXT,
+            extension TEXT,
+            line_type TEXT,
+            best_time TEXT,
+            fax TEXT,
+            address TEXT,
+            website TEXT,
+            notes TEXT,
+            FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
+        )
+    ''')
+
+    # Vendor notes table (for tracking interactions)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vendor_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id INTEGER NOT NULL,
+            note TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
         )
     ''')
 
@@ -168,6 +233,194 @@ def delete_all_leases_for_chat(chat_id: int) -> int:
 
 
 # ============================================================================
+# Vendor Database Functions
+# ============================================================================
+
+def add_vendor(chat_id: int, category: str, name: str, phone: str,
+               email: str = None, company: str = None, specialty: str = None,
+               rating: int = None) -> int:
+    """Add a new vendor to the database. Returns vendor_id."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO vendors (chat_id, category, name, phone, email, company, specialty, rating)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (chat_id, category, name, phone, email, company, specialty, rating))
+
+    vendor_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    logger.info(f"Added vendor {name} ({category}) in chat {chat_id}")
+
+    return vendor_id
+
+
+def add_pha_contact(vendor_id: int, agency_name: str = None, contact_person: str = None,
+                   department: str = None, extension: str = None, line_type: str = None,
+                   best_time: str = None, fax: str = None, address: str = None,
+                   website: str = None, notes: str = None):
+    """Add PHA-specific details for a vendor."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO pha_contacts (vendor_id, agency_name, contact_person, department,
+                                 extension, line_type, best_time, fax, address, website, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (vendor_id, agency_name, contact_person, department, extension, line_type,
+          best_time, fax, address, website, notes))
+
+    conn.commit()
+    conn.close()
+    logger.info(f"Added PHA contact details for vendor {vendor_id}")
+
+
+def get_vendors_by_category(chat_id: int, category: str) -> list:
+    """Get all vendors for a specific category."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT id, name, phone, email, company, specialty, rating, times_used, created_at
+        FROM vendors
+        WHERE chat_id = ? AND category = ?
+        ORDER BY name ASC
+    ''', (chat_id, category))
+
+    vendors = cursor.fetchall()
+    conn.close()
+
+    return vendors
+
+
+def get_vendor_by_id(vendor_id: int, chat_id: int) -> tuple:
+    """Get a specific vendor by ID."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT id, category, name, phone, email, company, specialty, rating, times_used, created_at
+        FROM vendors
+        WHERE id = ? AND chat_id = ?
+    ''', (vendor_id, chat_id))
+
+    vendor = cursor.fetchone()
+    conn.close()
+
+    return vendor
+
+
+def get_pha_details(vendor_id: int) -> tuple:
+    """Get PHA-specific details for a vendor."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT agency_name, contact_person, department, extension, line_type,
+               best_time, fax, address, website, notes
+        FROM pha_contacts
+        WHERE vendor_id = ?
+    ''', (vendor_id,))
+
+    pha_details = cursor.fetchone()
+    conn.close()
+
+    return pha_details
+
+
+def update_vendor(vendor_id: int, chat_id: int, **kwargs):
+    """Update vendor fields."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Build dynamic UPDATE query
+    fields = []
+    values = []
+    for key, value in kwargs.items():
+        fields.append(f"{key} = ?")
+        values.append(value)
+
+    if fields:
+        query = f"UPDATE vendors SET {', '.join(fields)} WHERE id = ? AND chat_id = ?"
+        values.extend([vendor_id, chat_id])
+        cursor.execute(query, values)
+        conn.commit()
+
+    conn.close()
+    logger.info(f"Updated vendor {vendor_id}")
+
+
+def delete_vendor(vendor_id: int, chat_id: int) -> bool:
+    """Delete a vendor and all associated data."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM vendors WHERE id = ? AND chat_id = ?', (vendor_id, chat_id))
+    deleted = cursor.rowcount > 0
+
+    conn.commit()
+    conn.close()
+
+    return deleted
+
+
+def add_vendor_note(vendor_id: int, note: str):
+    """Add a note to a vendor."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO vendor_notes (vendor_id, note)
+        VALUES (?, ?)
+    ''', (vendor_id, note))
+
+    conn.commit()
+    conn.close()
+
+
+def get_vendor_notes(vendor_id: int) -> list:
+    """Get all notes for a vendor."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT note, created_at
+        FROM vendor_notes
+        WHERE vendor_id = ?
+        ORDER BY created_at DESC
+    ''', (vendor_id,))
+
+    notes = cursor.fetchall()
+    conn.close()
+
+    return notes
+
+
+def search_vendors(chat_id: int, query: str) -> list:
+    """Search vendors by name, company, or specialty."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    search_query = f"%{query}%"
+    cursor.execute('''
+        SELECT id, category, name, phone, email, company, specialty, rating
+        FROM vendors
+        WHERE chat_id = ? AND (
+            name LIKE ? OR
+            company LIKE ? OR
+            specialty LIKE ?
+        )
+        ORDER BY name ASC
+    ''', (chat_id, search_query, search_query, search_query))
+
+    vendors = cursor.fetchall()
+    conn.close()
+
+    return vendors
+
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -221,10 +474,134 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("🗑️ Remove Lease", callback_data="menu_remove"),
-            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
+            InlineKeyboardButton("🔧 Vendors", callback_data="menu_vendors"),
         ],
         [
+            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
             InlineKeyboardButton("🔓 Logout", callback_data="menu_logout"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_vendor_categories_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard for vendor category selection."""
+    keyboard = [
+        [InlineKeyboardButton("🚰 Plumbers", callback_data="vendor_cat_plumber")],
+        [InlineKeyboardButton("⚡ Electricians", callback_data="vendor_cat_electrician")],
+        [InlineKeyboardButton("🏗️ General Contractors", callback_data="vendor_cat_contractor")],
+        [InlineKeyboardButton("🏛️ PHA Contacts", callback_data="vendor_cat_pha")],
+        [InlineKeyboardButton("🔨 Other Vendors", callback_data="vendor_cat_other")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="vendor_back_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_vendor_category_actions_keyboard(category: str) -> InlineKeyboardMarkup:
+    """Create keyboard for vendor category actions."""
+    cat_name = VENDOR_CATEGORIES.get(category, 'Vendors')
+    keyboard = [
+        [InlineKeyboardButton(f"➕ Add New {cat_name[2:]}", callback_data=f"vendor_add_{category}")],
+        [InlineKeyboardButton("🔍 Search", callback_data=f"vendor_search_{category}")],
+        [InlineKeyboardButton("🔙 Back to Categories", callback_data="menu_vendors")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def format_vendor_list(vendors: list, category: str) -> str:
+    """Format vendors as a list for display."""
+    if not vendors:
+        return f"No {VENDOR_CATEGORIES.get(category, 'vendors')} found."
+
+    lines = []
+    for idx, vendor in enumerate(vendors, 1):
+        vendor_id, name, phone, email, company, specialty, rating, times_used, created = vendor
+
+        rating_stars = "⭐" * rating if rating else "No rating"
+        company_str = f" ({company})" if company else ""
+
+        vendor_info = (
+            f"{idx}) **{name}**{company_str}\n"
+            f"   📞 {phone}\n"
+        )
+        if email:
+            vendor_info += f"   📧 {email}\n"
+        if specialty:
+            vendor_info += f"   💡 {specialty}\n"
+        vendor_info += f"   {rating_stars}\n"
+        vendor_info += f"   Used: {times_used} times"
+
+        lines.append(vendor_info)
+
+    return "\n\n".join(lines)
+
+
+def format_vendor_details(vendor: tuple, pha_details: tuple = None) -> str:
+    """Format detailed vendor information."""
+    vendor_id, category, name, phone, email, company, specialty, rating, times_used, created = vendor
+
+    rating_stars = "⭐" * rating if rating else "No rating"
+
+    details = (
+        f"**{name}**\n\n"
+    )
+
+    if company:
+        details += f"🏢 Company: {company}\n"
+
+    details += f"📞 Phone: {phone}\n"
+
+    if email:
+        details += f"📧 Email: {email}\n"
+
+    if specialty:
+        details += f"💡 Specialty: {specialty}\n"
+
+    details += f"⭐ Rating: {rating_stars}\n"
+    details += f"📊 Times Used: {times_used}\n"
+    details += f"📅 Added: {created[:10]}\n"
+
+    # Add PHA-specific details if available
+    if category == 'pha' and pha_details:
+        agency, contact_person, dept, ext, line_type, best_time, fax, address, website, notes = pha_details
+        details += "\n**PHA Details:**\n"
+        if agency:
+            details += f"🏛️ Agency: {agency}\n"
+        if contact_person:
+            details += f"👤 Contact: {contact_person}\n"
+        if dept:
+            details += f"🏢 Department: {dept}\n"
+        if ext:
+            details += f"📞 Extension: {ext}\n"
+        if line_type:
+            details += f"📱 Line Type: {line_type}\n"
+        if best_time:
+            details += f"🕐 Best Time: {best_time}\n"
+        if fax:
+            details += f"📠 Fax: {fax}\n"
+        if address:
+            details += f"📍 Address: {address}\n"
+        if website:
+            details += f"🌐 Website: {website}\n"
+        if notes:
+            details += f"📝 Notes: {notes}\n"
+
+    return details
+
+
+def get_vendor_detail_keyboard(vendor_id: int, category: str) -> InlineKeyboardMarkup:
+    """Create keyboard for vendor detail actions."""
+    keyboard = [
+        [
+            InlineKeyboardButton("✏️ Edit", callback_data=f"vendor_edit_{vendor_id}"),
+            InlineKeyboardButton("🗑️ Delete", callback_data=f"vendor_delete_{vendor_id}"),
+        ],
+        [
+            InlineKeyboardButton("📝 Add Note", callback_data=f"vendor_note_{vendor_id}"),
+            InlineKeyboardButton("📋 View Notes", callback_data=f"vendor_viewnotes_{vendor_id}"),
+        ],
+        [
+            InlineKeyboardButton("🔙 Back", callback_data=f"vendor_cat_{category}"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -252,11 +629,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command with button menu."""
     help_text = (
         "Welcome to Lease Recertification Bot! 🏠\n\n"
-        "This bot helps you track lease recertifications.\n\n"
+        "This bot helps you track lease recertifications and manage vendors.\n\n"
         "Commands:\n"
         "📝 /add - Add a new lease\n"
         "📋 /list - View all leases\n"
         "🗑️ /remove - Remove a lease\n"
+        "🔧 Vendors - Manage your vendor contacts\n"
         "🔓 /logout - Logout from the bot\n"
         "ℹ️ /help - Show this help message\n\n"
         "The bot will automatically send reminders 7 days before recertification "
@@ -526,10 +904,11 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
         # Show help message
         help_text = (
             "ℹ️ Help - Lease Recertification Bot\n\n"
-            "This bot helps you track lease recertifications.\n\n"
+            "This bot helps you track lease recertifications and manage vendors.\n\n"
             "📝 Add Lease - Add a new lease with tenant info\n"
             "📋 View Leases - See all your tracked leases\n"
             "🗑️ Remove Lease - Delete a lease from tracking\n"
+            "🔧 Vendors - Manage vendor contacts (plumbers, electricians, PHA contacts, etc.)\n"
             "🔓 Logout - Remove all your data\n\n"
             "The bot automatically sends reminders 7 days before "
             "recertification is due (9 months after lease start date)."
@@ -545,6 +924,101 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=get_main_menu_keyboard()
         )
         logger.info(f"Logged out chat {chat_id} via button, deleted {count} leases")
+
+    elif callback_data == "menu_vendors":
+        # Show vendor categories
+        await query.message.reply_text(
+            "🔧 **Vendor Management**\n\nSelect a category:",
+            reply_markup=get_vendor_categories_keyboard(),
+            parse_mode='Markdown'
+        )
+
+    elif callback_data.startswith("vendor_cat_"):
+        # Show vendors in a category
+        category = callback_data.replace("vendor_cat_", "")
+        vendors = get_vendors_by_category(chat_id, category)
+
+        cat_name = VENDOR_CATEGORIES.get(category, 'Vendors')
+        vendor_list = format_vendor_list(vendors, category)
+
+        # Create inline buttons for each vendor
+        keyboard_buttons = []
+        for idx, vendor in enumerate(vendors, 1):
+            vendor_id = vendor[0]
+            vendor_name = vendor[1]
+            keyboard_buttons.append([InlineKeyboardButton(
+                f"{idx}. {vendor_name}",
+                callback_data=f"vendor_view_{vendor_id}"
+            )])
+
+        # Add action buttons
+        keyboard_buttons.extend(get_vendor_category_actions_keyboard(category).inline_keyboard)
+        keyboard = InlineKeyboardMarkup(keyboard_buttons)
+
+        await query.message.reply_text(
+            f"{cat_name}\n\n{vendor_list}",
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+
+    elif callback_data.startswith("vendor_view_"):
+        # View vendor details
+        vendor_id = int(callback_data.replace("vendor_view_", ""))
+        vendor = get_vendor_by_id(vendor_id, chat_id)
+
+        if vendor:
+            category = vendor[1]
+            pha_details = get_pha_details(vendor_id) if category == 'pha' else None
+            details = format_vendor_details(vendor, pha_details)
+
+            await query.message.reply_text(
+                details,
+                reply_markup=get_vendor_detail_keyboard(vendor_id, category),
+                parse_mode='Markdown'
+            )
+
+    elif callback_data.startswith("vendor_delete_"):
+        # Confirm vendor deletion
+        vendor_id = int(callback_data.replace("vendor_delete_", ""))
+        vendor = get_vendor_by_id(vendor_id, chat_id)
+
+        if vendor:
+            vendor_name = vendor[2]
+            category = vendor[1]
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("⚠️ Yes, Delete", callback_data=f"vendor_confirm_delete_{vendor_id}_{category}"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"vendor_view_{vendor_id}")
+                ]
+            ])
+
+            await query.message.reply_text(
+                f"⚠️ Are you sure you want to delete **{vendor_name}**?",
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
+
+    elif callback_data.startswith("vendor_confirm_delete_"):
+        # Actually delete the vendor
+        parts = callback_data.replace("vendor_confirm_delete_", "").split("_")
+        vendor_id = int(parts[0])
+        category = parts[1]
+
+        vendor = get_vendor_by_id(vendor_id, chat_id)
+        if vendor:
+            vendor_name = vendor[2]
+            delete_vendor(vendor_id, chat_id)
+            await query.message.reply_text(
+                f"✅ {vendor_name} has been deleted.",
+                reply_markup=get_vendor_category_actions_keyboard(category)
+            )
+
+    elif callback_data == "vendor_back_main":
+        # Back to main menu from vendors
+        await query.message.reply_text(
+            "Main Menu",
+            reply_markup=get_main_menu_keyboard()
+        )
 
 
 async def add_command_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,6 +1051,159 @@ async def remove_command_button(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
     return REMOVE_CHOICE
+
+
+# ============================================================================
+# Vendor Management - Conversation Flows
+# ============================================================================
+
+async def add_vendor_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start adding a vendor from button."""
+    query = update.callback_query
+    category = query.data.replace("vendor_add_", "")
+    context.user_data['vendor_category'] = category
+
+    cat_name = VENDOR_CATEGORIES.get(category, 'Vendor')
+    await query.message.reply_text(f"➕ Adding new {cat_name[2:]}\n\nEnter vendor name:")
+    return VENDOR_NAME
+
+
+async def vendor_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive vendor name."""
+    context.user_data['vendor_name'] = update.message.text.strip()
+    await update.message.reply_text("Enter phone number:")
+    return VENDOR_PHONE
+
+
+async def vendor_phone_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive phone number."""
+    context.user_data['vendor_phone'] = update.message.text.strip()
+    await update.message.reply_text("Enter email (or type 'skip' to skip):")
+    return VENDOR_EMAIL
+
+
+async def vendor_email_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive email."""
+    email = update.message.text.strip()
+    context.user_data['vendor_email'] = None if email.lower() == 'skip' else email
+    await update.message.reply_text("Enter company name (or type 'skip' to skip):")
+    return VENDOR_COMPANY
+
+
+async def vendor_company_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive company name."""
+    company = update.message.text.strip()
+    context.user_data['vendor_company'] = None if company.lower() == 'skip' else company
+    await update.message.reply_text("Enter specialty/notes (or type 'skip' to skip):")
+    return VENDOR_SPECIALTY
+
+
+async def vendor_specialty_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive specialty."""
+    specialty = update.message.text.strip()
+    context.user_data['vendor_specialty'] = None if specialty.lower() == 'skip' else specialty
+    await update.message.reply_text("Enter rating 1-5 stars (or type 'skip' to skip):")
+    return VENDOR_RATING
+
+
+async def vendor_rating_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive rating and save vendor."""
+    rating_text = update.message.text.strip()
+
+    rating = None
+    if rating_text.lower() != 'skip':
+        try:
+            rating = int(rating_text)
+            if rating < 1 or rating > 5:
+                await update.message.reply_text("Invalid rating. Please enter 1-5:")
+                return VENDOR_RATING
+        except ValueError:
+            await update.message.reply_text("Invalid rating. Please enter 1-5:")
+            return VENDOR_RATING
+
+    context.user_data['vendor_rating'] = rating
+
+    # Save vendor
+    chat_id = update.effective_chat.id
+    category = context.user_data['vendor_category']
+    name = context.user_data['vendor_name']
+    phone = context.user_data['vendor_phone']
+    email = context.user_data.get('vendor_email')
+    company = context.user_data.get('vendor_company')
+    specialty = context.user_data.get('vendor_specialty')
+
+    vendor_id = add_vendor(chat_id, category, name, phone, email, company, specialty, rating)
+
+    # If PHA category, ask for additional details
+    if category == 'pha':
+        context.user_data['vendor_id'] = vendor_id
+        await update.message.reply_text("📋 PHA Contact - Enter agency name (or 'skip'):")
+        return PHA_AGENCY
+
+    # Show confirmation
+    confirmation = (
+        f"✅ Vendor added!\n\n"
+        f"**{name}**\n"
+        f"📞 {phone}\n"
+    )
+    if email:
+        confirmation += f"📧 {email}\n"
+    if company:
+        confirmation += f"🏢 {company}\n"
+    if specialty:
+        confirmation += f"💡 {specialty}\n"
+    if rating:
+        confirmation += f"⭐ {'⭐' * rating}\n"
+
+    await update.message.reply_text(
+        confirmation,
+        reply_markup=get_vendor_category_actions_keyboard(category),
+        parse_mode='Markdown'
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# PHA-specific conversation flow
+async def pha_agency_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive PHA agency name."""
+    agency = update.message.text.strip()
+    context.user_data['pha_agency'] = None if agency.lower() == 'skip' else agency
+    await update.message.reply_text("Enter contact person name (or 'skip'):")
+    return PHA_CONTACT_PERSON
+
+
+async def pha_contact_person_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive PHA contact person."""
+    contact = update.message.text.strip()
+    context.user_data['pha_contact_person'] = None if contact.lower() == 'skip' else contact
+    await update.message.reply_text("Enter department (or 'skip'):")
+    return PHA_DEPARTMENT
+
+
+async def pha_department_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive PHA department."""
+    dept = update.message.text.strip()
+    context.user_data['pha_department'] = None if dept.lower() == 'skip' else dept
+    await update.message.reply_text("That's all! Saving PHA contact...")
+
+    # Save PHA details
+    vendor_id = context.user_data['vendor_id']
+    add_pha_contact(
+        vendor_id=vendor_id,
+        agency_name=context.user_data.get('pha_agency'),
+        contact_person=context.user_data.get('pha_contact_person'),
+        department=context.user_data.get('pha_department')
+    )
+
+    await update.message.reply_text(
+        "✅ PHA Contact saved successfully!",
+        reply_markup=get_vendor_category_actions_keyboard('pha')
+    )
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 # ============================================================================
@@ -705,6 +1332,26 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     application.add_handler(remove_conversation)
+
+    # Add conversation handler for vendor management
+    vendor_conversation = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(add_vendor_start, pattern="^vendor_add_")
+        ],
+        states={
+            VENDOR_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_name_received)],
+            VENDOR_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_phone_received)],
+            VENDOR_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_email_received)],
+            VENDOR_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_company_received)],
+            VENDOR_SPECIALTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_specialty_received)],
+            VENDOR_RATING: [MessageHandler(filters.TEXT & ~filters.COMMAND, vendor_rating_received)],
+            PHA_AGENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, pha_agency_received)],
+            PHA_CONTACT_PERSON: [MessageHandler(filters.TEXT & ~filters.COMMAND, pha_contact_person_received)],
+            PHA_DEPARTMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, pha_department_received)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_conversation)],
+    )
+    application.add_handler(vendor_conversation)
 
     # Add callback query handler for inline buttons (non-conversation buttons)
     application.add_handler(CallbackQueryHandler(button_callback_handler))
