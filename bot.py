@@ -168,7 +168,7 @@ def calculate_dates(lease_start_str: str) -> tuple:
     Returns (recert_date_str, reminder_date_str) or (None, None) if invalid.
     """
     try:
-        lease_start = datetime.strptime(lease_start_str, '%Y-%m-%d')
+        lease_start = datetime.strptime(lease_start_str, '%m/%d/%Y')
 
         # Recert date = lease start + 9 months
         # Approximate 9 months as 9 * 30 = 270 days
@@ -177,8 +177,8 @@ def calculate_dates(lease_start_str: str) -> tuple:
         # Reminder date = recert date - 7 days
         reminder_date = recert_date - timedelta(days=7)
 
-        return (recert_date.strftime('%Y-%m-%d'),
-                reminder_date.strftime('%Y-%m-%d'))
+        return (recert_date.strftime('%m/%d/%Y'),
+                reminder_date.strftime('%m/%d/%Y'))
     except Exception as e:
         logger.error(f"Error calculating dates: {e}")
         return (None, None)
@@ -313,7 +313,7 @@ async def add_tenant_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_property_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Receive property address, ask for lease start date."""
     context.user_data['property_address'] = update.message.text.strip()
-    await update.message.reply_text("Enter lease start date (YYYY-MM-DD):")
+    await update.message.reply_text("Enter lease start date (MM/DD/YYYY):")
     return LEASE_START_DATE
 
 
@@ -323,11 +323,11 @@ async def add_lease_start_date(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Validate date format
     try:
-        datetime.strptime(date_text, '%Y-%m-%d')
+        datetime.strptime(date_text, '%m/%d/%Y')
     except ValueError:
         await update.message.reply_text(
-            "❌ Invalid date format. Please enter date as YYYY-MM-DD "
-            "(e.g., 2025-01-15):"
+            "❌ Invalid date format. Please enter date as MM/DD/YYYY "
+            "(e.g., 01/15/2025):"
         )
         return LEASE_START_DATE
 
@@ -336,7 +336,7 @@ async def add_lease_start_date(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if not recert_date or not reminder_date:
         await update.message.reply_text(
-            "❌ Error calculating dates. Please try again with format YYYY-MM-DD:"
+            "❌ Error calculating dates. Please try again with format MM/DD/YYYY:"
         )
         return LEASE_START_DATE
 
@@ -579,7 +579,7 @@ async def check_and_send_reminders(application: Application):
     Background task that checks for leases due for reminder today
     and sends notifications to users and team chat.
     """
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now().strftime('%m/%d/%Y')
     logger.info(f"Checking for reminders on {today}")
 
     leases = get_leases_for_reminder(today)
