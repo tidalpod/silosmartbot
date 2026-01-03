@@ -32,8 +32,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Database file
-DB_FILE = 'leases.db'
+# Database file - use persistent storage path if available (Railway), otherwise use local
+DB_DIR = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '.')
+DB_FILE = os.path.join(DB_DIR, 'leases.db')
 
 # Conversation states for /add command
 TENANT_NAME, PROPERTY_ADDRESS, LEASE_START_DATE = range(3)
