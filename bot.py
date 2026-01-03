@@ -88,7 +88,7 @@ def add_lease(chat_id: int, tenant_name: str, property_address: str,
 
 
 def get_leases_by_chat(chat_id: int) -> list:
-    """Retrieve all leases for a specific chat_id."""
+    """Retrieve all leases for a specific chat_id, sorted by recert date (soonest first)."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
@@ -97,13 +97,22 @@ def get_leases_by_chat(chat_id: int) -> list:
                recert_date, reminder_date
         FROM leases
         WHERE chat_id = ?
-        ORDER BY reminder_date ASC
     ''', (chat_id,))
 
     leases = cursor.fetchall()
     conn.close()
 
-    return leases
+    # Sort by recert_date (convert MM/DD/YYYY to date object for proper sorting)
+    def parse_date(lease):
+        try:
+            recert_date_str = lease[4]  # recert_date is index 4
+            return datetime.strptime(recert_date_str, '%m/%d/%Y')
+        except:
+            return datetime.max  # Put invalid dates at the end
+
+    leases_sorted = sorted(leases, key=parse_date)
+
+    return leases_sorted
 
 
 def get_leases_for_reminder(today_str: str) -> list:
