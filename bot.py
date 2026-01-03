@@ -11,12 +11,13 @@ from datetime import datetime, timedelta
 from typing import Optional
 import asyncio
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -184,15 +185,40 @@ def calculate_dates(lease_start_str: str) -> tuple:
 
 
 def format_lease_list(leases: list) -> str:
-    """Format leases as a numbered list for display."""
+    """Format leases as a numbered list with box styling."""
     lines = []
     for idx, lease in enumerate(leases, 1):
         lease_id, tenant, address, start, recert, reminder = lease
-        lines.append(
-            f"{idx}) Tenant: {tenant} – Address: {address} – "
-            f"Start: {start} – Recert: {recert} – Reminder: {reminder}"
+        lease_box = (
+            f"{idx}) \n"
+            f"┌───────────────────────────────\n"
+            f"│ Tenant:   {tenant}\n"
+            f"│ Address:  {address}\n"
+            f"│ Start:    {start}\n"
+            f"│ Recert:   {recert}\n"
+            f"│ Reminder: {reminder}\n"
+            f"└───────────────────────────────"
         )
+        lines.append(lease_box)
     return "\n\n".join(lines)
+
+
+def get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Create and return the main menu inline keyboard."""
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 Add Lease", callback_data="menu_add"),
+            InlineKeyboardButton("📋 View Leases", callback_data="menu_list"),
+        ],
+        [
+            InlineKeyboardButton("🗑️ Remove Lease", callback_data="menu_remove"),
+            InlineKeyboardButton("ℹ️ Help", callback_data="menu_help"),
+        ],
+        [
+            InlineKeyboardButton("🔓 Logout", callback_data="menu_logout"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 
 # ============================================================================
@@ -200,26 +226,21 @@ def format_lease_list(leases: list) -> str:
 # ============================================================================
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command."""
+    """Handle /start command with interactive button menu."""
     welcome_text = (
         "Welcome to Lease Recertification Bot! 🏠\n\n"
         "This bot helps you track lease recertifications.\n\n"
-        "Commands:\n"
-        "📝 /add - Add a new lease\n"
-        "📋 /list - View all leases\n"
-        "🗑️ /remove - Remove a lease\n"
-        "🔓 /logout - Logout from the bot\n"
-        "ℹ️ /help - Show this help message\n\n"
         "The bot will automatically send reminders 7 days before recertification "
-        "is due (9 months after lease start date)."
+        "is due (9 months after lease start date).\n\n"
+        "👇 Choose an option below:"
     )
 
-    await update.message.reply_text(welcome_text)
-    await update.message.reply_text("You can now use /add to start tracking a lease.")
+    keyboard = get_main_menu_keyboard()
+    await update.message.reply_text(welcome_text, reply_markup=keyboard)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /help command."""
+    """Handle /help command with button menu."""
     help_text = (
         "Welcome to Lease Recertification Bot! 🏠\n\n"
         "This bot helps you track lease recertifications.\n\n"
@@ -230,33 +251,44 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔓 /logout - Logout from the bot\n"
         "ℹ️ /help - Show this help message\n\n"
         "The bot will automatically send reminders 7 days before recertification "
-        "is due (9 months after lease start date)."
+        "is due (9 months after lease start date).\n\n"
+        "👇 Use the menu below:"
     )
 
-    await update.message.reply_text(help_text)
+    keyboard = get_main_menu_keyboard()
+    await update.message.reply_text(help_text, reply_markup=keyboard)
 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /list command - show all leases for this chat."""
     chat_id = update.effective_chat.id
     leases = get_leases_by_chat(chat_id)
+    keyboard = get_main_menu_keyboard()
 
     if not leases:
-        await update.message.reply_text("No leases found. Use /add to create one.")
+        await update.message.reply_text(
+            "No leases found. Use /add to create one.",
+            reply_markup=keyboard
+        )
         return
 
     lease_list = format_lease_list(leases)
-    await update.message.reply_text(f"📋 Your leases:\n\n{lease_list}")
+    await update.message.reply_text(
+        f"📋 Your leases:\n\n{lease_list}",
+        reply_markup=keyboard
+    )
 
 
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /logout command - delete all leases for this chat."""
     chat_id = update.effective_chat.id
     count = delete_all_leases_for_chat(chat_id)
+    keyboard = get_main_menu_keyboard()
 
     await update.message.reply_text(
         "You have been logged out and all your tracked leases for this chat "
-        "have been removed."
+        "have been removed.",
+        reply_markup=keyboard
     )
     logger.info(f"Logged out chat {chat_id}, deleted {count} leases")
 
@@ -322,7 +354,7 @@ async def add_lease_start_date(update: Update, context: ContextTypes.DEFAULT_TYP
         reminder_date=reminder_date
     )
 
-    # Send confirmation
+    # Send confirmation with menu
     confirmation = (
         f"✅ Lease added.\n\n"
         f"Tenant: {tenant_name}\n"
@@ -331,7 +363,8 @@ async def add_lease_start_date(update: Update, context: ContextTypes.DEFAULT_TYP
         f"Recert: {recert_date}\n"
         f"Reminder: {reminder_date}"
     )
-    await update.message.reply_text(confirmation)
+    keyboard = get_main_menu_keyboard()
+    await update.message.reply_text(confirmation, reply_markup=keyboard)
 
     # Clear user data
     context.user_data.clear()
@@ -405,19 +438,136 @@ async def remove_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     success = delete_lease(lease_id, chat_id)
 
+    keyboard = get_main_menu_keyboard()
+
     if success:
         await update.message.reply_text(
-            f"✅ Lease for {tenant_name} has been removed."
+            f"✅ Lease for {tenant_name} has been removed.",
+            reply_markup=keyboard
         )
     else:
         await update.message.reply_text(
-            "❌ Error removing lease. Please try again."
+            "❌ Error removing lease. Please try again.",
+            reply_markup=keyboard
         )
 
     # Clear user data
     context.user_data.clear()
 
     return ConversationHandler.END
+
+
+# ============================================================================
+# Inline Button Callback Handlers
+# ============================================================================
+
+async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle all inline button callbacks from the main menu."""
+    query = update.callback_query
+    await query.answer()  # Acknowledge the button press
+
+    callback_data = query.data
+    chat_id = update.effective_chat.id
+
+    # Handle different button actions
+    if callback_data == "menu_add":
+        # Start the /add conversation
+        await query.message.reply_text("📝 Adding a new lease...\n\nEnter tenant name:")
+        return TENANT_NAME
+
+    elif callback_data == "menu_list":
+        # Show list of leases
+        leases = get_leases_by_chat(chat_id)
+
+        if not leases:
+            await query.message.reply_text(
+                "No leases found. Use 📝 Add Lease to create one.",
+                reply_markup=get_main_menu_keyboard()
+            )
+        else:
+            lease_list = format_lease_list(leases)
+            await query.message.reply_text(
+                f"📋 Your leases:\n\n{lease_list}",
+                reply_markup=get_main_menu_keyboard()
+            )
+
+    elif callback_data == "menu_remove":
+        # Start the /remove conversation
+        leases = get_leases_by_chat(chat_id)
+
+        if not leases:
+            await query.message.reply_text(
+                "No leases found. There's nothing to remove.",
+                reply_markup=get_main_menu_keyboard()
+            )
+            return ConversationHandler.END
+
+        # Store leases in context for later reference
+        context.user_data['remove_leases'] = leases
+
+        # Show numbered list
+        lease_list = format_lease_list(leases)
+        await query.message.reply_text(
+            f"🗑️ Removing a lease...\n\n📋 Your leases:\n\n{lease_list}\n\n"
+            f"Reply with the number of the lease you want to remove:"
+        )
+        return REMOVE_CHOICE
+
+    elif callback_data == "menu_help":
+        # Show help message
+        help_text = (
+            "ℹ️ Help - Lease Recertification Bot\n\n"
+            "This bot helps you track lease recertifications.\n\n"
+            "📝 Add Lease - Add a new lease with tenant info\n"
+            "📋 View Leases - See all your tracked leases\n"
+            "🗑️ Remove Lease - Delete a lease from tracking\n"
+            "🔓 Logout - Remove all your data\n\n"
+            "The bot automatically sends reminders 7 days before "
+            "recertification is due (9 months after lease start date)."
+        )
+        await query.message.reply_text(help_text, reply_markup=get_main_menu_keyboard())
+
+    elif callback_data == "menu_logout":
+        # Logout and delete all leases
+        count = delete_all_leases_for_chat(chat_id)
+        await query.message.reply_text(
+            "🔓 You have been logged out and all your tracked leases "
+            "for this chat have been removed.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        logger.info(f"Logged out chat {chat_id} via button, deleted {count} leases")
+
+
+async def add_command_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the /add conversation from button press."""
+    await update.callback_query.message.reply_text("📝 Adding a new lease...\n\nEnter tenant name:")
+    return TENANT_NAME
+
+
+async def remove_command_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the /remove conversation from button press."""
+    query = update.callback_query
+    chat_id = update.effective_chat.id
+    leases = get_leases_by_chat(chat_id)
+
+    if not leases:
+        await query.message.reply_text(
+            "No leases found. There's nothing to remove.",
+            reply_markup=get_main_menu_keyboard()
+        )
+        return ConversationHandler.END
+
+    # Store leases in context for later reference
+    context.user_data['remove_leases'] = leases
+
+    # Show numbered list
+    lease_list = format_lease_list(leases)
+    await query.message.reply_text(
+        f"🗑️ Removing a lease...\n\n📋 Your leases:\n\n{lease_list}\n\n"
+        f"Reply with the number of the lease you want to remove:"
+    )
+
+    return REMOVE_CHOICE
 
 
 # ============================================================================
@@ -519,9 +669,12 @@ def main():
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("logout", logout_command))
 
-    # Add conversation handler for /add
+    # Add conversation handler for /add (supports both command and button)
     add_conversation = ConversationHandler(
-        entry_points=[CommandHandler("add", add_command)],
+        entry_points=[
+            CommandHandler("add", add_command),
+            CallbackQueryHandler(add_command_button, pattern="^menu_add$")
+        ],
         states={
             TENANT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_tenant_name)],
             PROPERTY_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_property_address)],
@@ -531,15 +684,21 @@ def main():
     )
     application.add_handler(add_conversation)
 
-    # Add conversation handler for /remove
+    # Add conversation handler for /remove (supports both command and button)
     remove_conversation = ConversationHandler(
-        entry_points=[CommandHandler("remove", remove_command)],
+        entry_points=[
+            CommandHandler("remove", remove_command),
+            CallbackQueryHandler(remove_command_button, pattern="^menu_remove$")
+        ],
         states={
             REMOVE_CHOICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_choice)],
         },
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     application.add_handler(remove_conversation)
+
+    # Add callback query handler for inline buttons (non-conversation buttons)
+    application.add_handler(CallbackQueryHandler(button_callback_handler))
 
     # Set up background scheduler
     scheduler = setup_scheduler(application)
